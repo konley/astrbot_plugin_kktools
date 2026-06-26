@@ -8,6 +8,7 @@ import time
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
+import astrbot.api.message_components as Comp
 from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
@@ -374,11 +375,19 @@ class KKTools(Star):
 
         content = self._strip_markdown(content)
 
+        # 地理定位：先发摘要，再发合并转发包含完整过程（防刷屏）
+        if feature == "locate":
+            summary, full = self._split_locate(content)
+            yield event.plain_result(summary)
+            forward = self._make_forward(event, full)
+            if forward is not None:
+                yield forward
+            return
+
         prefix_label = {
             "tldr": "【省流总结】\n",
             "shitu": "【识图结果】\n",
             "sarcastic": "",
-            "locate": "【OSINT地理定位】\n",
         }
         yield event.plain_result(prefix_label[feature] + content)
 
@@ -476,3 +485,35 @@ class KKTools(Star):
         text = re.sub(r"\*{1,2}", "", text)
         text = re.sub(r"^#+\s*", "", text, flags=re.MULTILINE)
         return text
+
+    @staticmethod
+    def _split_locate(content: str):
+        """拆分定位结果为 (摘要, 完整全文)。
+
+        摘要 = 从首个排名标记（🏆/🥈/第一可能位置）起到结尾；
+        若找不到标记则用全文兜底。完整全文始终是 content。
+        """
+        markers = ["🏆", "🥈", "第一可能位置", "最终", "结构化排名"]
+        idx = -1
+        for m in markers:
+            pos = content.find(m)
+            if pos != -1 and (idx == -1 or pos < idx):
+                idx = pos
+        if idx != -1:
+            summary = content[idx:].strip()
+        else:
+            summary = content.strip()
+        return summary, content.strip()
+
+    def _make_forward(self, event: AstrMessageEvent, full_text: str):
+        """构造合并转发消息（仅 aiocqhttp 等支持的平台），失败返回 None。"""
+        try:
+            node = Comp.Node(
+                uin=int(event.get_self_id()) if str(event.get_self_id()).isdigit() else 0,
+                name="地理定位完整分析",
+                content=[Comp.Plain(full_text)],
+            )
+            return event.chain_result([node])
+        except Exception as e:
+            logger.warning(f"[kktools:locate] 合并转发构造失败，降级跳过: {e}")
+            return None
