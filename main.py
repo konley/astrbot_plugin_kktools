@@ -1,4 +1,4 @@
-"""AI工具箱：省流总结、识图、阴阳怪气、地理定位。
+"""kk工具箱：省流总结、识图、阴阳怪气、地理定位。
 
 移植自渔火（https://github.com/yhArcadia）的 ai-tools.js。
 """
@@ -229,7 +229,7 @@ def _parse_keywords(value, default):
 @register(
     "astrbot_plugin_kktools",
     "konley",
-    "AI工具箱——省流总结、识图、阴阳怪气、地理定位",
+    "kk工具箱——省流总结、识图、阴阳怪气、地理定位",
     "1.0.0",
 )
 class KKTools(Star):
