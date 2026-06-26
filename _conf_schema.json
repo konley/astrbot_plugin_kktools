@@ -1,4 +1,4 @@
-﻿{
+{
   "ignore_slash": {
     "description": "忽略指令前的 / 或 # 前缀",
     "type": "bool",
