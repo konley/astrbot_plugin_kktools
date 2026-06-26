@@ -1,0 +1,84 @@
+﻿{
+  "ignore_slash": {
+    "description": "忽略指令前的 / 或 # 前缀",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 /省流、#省流 和 省流 都能触发；关闭后仅无前缀关键词可触发"
+  },
+  "enable_vision": {
+    "description": "启用图片分析",
+    "type": "bool",
+    "default": true,
+    "hint": "需要当前 Provider 模型支持多模态（视觉）"
+  },
+  "cooldown": {
+    "description": "用户冷却时间（秒）",
+    "type": "int",
+    "default": 5,
+    "hint": "同一用户在该时间内重复触发会被拦截"
+  },
+  "tldr_enabled": {
+    "description": "启用「省流总结」",
+    "type": "bool",
+    "default": true
+  },
+  "tldr_keywords": {
+    "description": "省流总结触发关键词（前缀匹配）",
+    "type": "list",
+    "default": ["省流", "总结", "tldr", "TLDR"],
+    "hint": "消息以这些关键词开头时触发，可用逗号分隔多个"
+  },
+  "tldr_prompt": {
+    "description": "省流总结系统提示词（留空使用内置默认）",
+    "type": "text",
+    "default": ""
+  },
+  "shitu_enabled": {
+    "description": "启用「识图」",
+    "type": "bool",
+    "default": true
+  },
+  "shitu_keywords": {
+    "description": "识图触发关键词（前缀匹配）",
+    "type": "list",
+    "default": ["识图"],
+    "hint": "消息以这些关键词开头时触发"
+  },
+  "shitu_prompt": {
+    "description": "识图系统提示词（留空使用内置默认）",
+    "type": "text",
+    "default": ""
+  },
+  "sarcastic_enabled": {
+    "description": "启用「阴阳怪气反话」",
+    "type": "bool",
+    "default": true
+  },
+  "sarcastic_keywords": {
+    "description": "阴阳怪气触发关键词（后缀匹配）",
+    "type": "list",
+    "default": ["好吃吗", "好喝吗", "好用吗", "好玩吗", "好看吗"],
+    "hint": "消息以这些关键词结尾时触发，允许后跟 ?/？"
+  },
+  "sarcastic_prompt": {
+    "description": "阴阳怪气系统提示词（留空使用内置默认）",
+    "type": "text",
+    "default": ""
+  },
+  "locate_enabled": {
+    "description": "启用「地理定位」",
+    "type": "bool",
+    "default": true
+  },
+  "locate_keywords": {
+    "description": "地理定位触发关键词（前缀匹配）",
+    "type": "list",
+    "default": ["在哪"],
+    "hint": "消息以这些关键词开头时触发"
+  },
+  "locate_prompt": {
+    "description": "地理定位系统提示词（留空使用内置默认）",
+    "type": "text",
+    "default": ""
+  }
+}

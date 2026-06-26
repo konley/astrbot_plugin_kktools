@@ -1,0 +1,11 @@
+name: astrbot_plugin_kktools
+desc: AI工具箱——省流总结、识图、阴阳怪气、地理定位，调用 AstrBot 已配置的大模型。
+version: 1.0.0
+author: konley
+display_name: AI工具箱
+repo: https://github.com/konley/astrbot_plugin_kktools
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+astrbot_version: ">=3.5.0"
