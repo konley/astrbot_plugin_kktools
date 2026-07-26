@@ -3,8 +3,14 @@
 移植自渔火（https://github.com/yhArcadia）的 ai-tools.js。
 """
 
+from __future__ import annotations
+
+import json
 import re
 import time
+from pathlib import Path
+
+import aiohttp
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -129,11 +135,11 @@ DEFAULT_SHITU_PROMPT = (
     "- 回应内容：按照你的理解自由发挥，同时明确告知你也不太确定是否正确。\n"
     "\n"
     "### 响应规则\n"
-    "1. **优先级逻辑**：角色类 > 场景类 > 实物类 > 信息类，优先处理高优先级分类\n"
-    "2. **信息完整性**：每个回应必须包含该分类要求的核心字段（如角色类必须有名称+出处）\n"
-    "3. **隐私保护**：文档类仅识别类型，不提取具体文字；医学影像不做诊断建议\n"
-    "4. **格式规范**：使用中文口语化表达，链接需完整标注。你的回答不要放在引号中。字数不必局限于我所给的例子，尽量丰富你的回答内容，尽可能地详实、充分、面面俱到。\n"
-    '5. **敏感词过滤**：请严格回避任何敏感涉政键政问题，遇到这类问题直接回一句"见nm证呢滚"。'
+    "1. 优先级：角色类 > 场景/实物 > 信息/符号 > 其它\n"
+    "2. 先一句结论，再 2-4 条依据；口语中文，不要 Markdown，不要整段放在引号里\n"
+    "3. 文档类不抄敏感明细；医学影像只说明类型，不做诊断\n"
+    "4. 不确定就说不确定，禁止瞎编出处/姓名\n"
+    '5. 涉政键政直接回："见nm证呢滚"'
 )
 
 DEFAULT_SARCASTIC_PROMPT = (
@@ -147,56 +153,57 @@ DEFAULT_SARCASTIC_PROMPT = (
 )
 
 DEFAULT_LOCATE_PROMPT = (
-    "请注意，这不是一个生成图片的任务，请你按照我的要求输出文本。\n"
-    "请你作为一名专业的开源情报（OSINT）地理位置分析师，具备极其敏锐的观察力和丰富的地理、植被、建筑及人文知识。\n"
+    "你是专业 OSINT 地理位置分析师。根据用户图片推断拍摄地点。只输出文本，不要生成图片，不要 Markdown。\n"
     "\n"
-    "请仔细观察我提供的图片，系统性地推断拍摄地点的真实位置。\n"
+    "【硬规则】\n"
+    "1. 只写画面可见线索；看不清的文字/车牌/路牌禁止编造。\n"
+    "2. 梗图、二次元、纯室内无窗外景、模糊到无法辨认 → 明确「无法定位」，不要硬猜。\n"
+    "3. 证据不足只到国家/省/大区；只有把握很高才写城市或经纬度。\n"
+    "4. 推理正文控制在 400 字内。\n"
+    "5. 涉政键政直接回：见nm证呢滚\n"
     "\n"
-    "**⚠️ 重要原则：请不要急于给出具体的坐标或地点。你必须严格按照以下【分析步骤】进行逐步推理，展示你的思考过程。**\n"
+    "【分析顺序（简写）】\n"
+    "自然：植被/地貌/光影 → 人文：车行方向/建筑材料与风格/可见语言文字与标志 → "
+    "提炼 2-3 条关键线索 → 宏观区域 → 候选地点。\n"
     "\n"
-    "---\n"
-    "## 📋 分析步骤\n"
+    "【输出格式，必须遵守】\n"
+    "先写简要推理，然后严格按下面块输出：\n"
+    "NEED_SEARCH: yes 或 no\n"
+    "SEARCH_QUERIES:\n"
+    "- 查询词1\n"
+    "- 查询词2\n"
+    "（最多 3 条；仅当有可被网络核实的独特线索——如地标名、独特建筑、清晰路牌文字、景区招牌——时填 yes；"
+    "泛泛气候/植被推断填 no，查询词可留空）\n"
     "\n"
-    "### 第一步：自然环境特征分析\n"
-    "请详细描述画面中的自然元素，并推断其对应的气候带或地理区域：\n"
-    "* **植被分析：** 树种（如针叶、阔叶、棕榈）、草地形态、植被密度。这暗示了什么气候（热带、亚热带、温带、寒带）？\n"
-    '* **地形地貌：** 是平原、盆地（如"坝子"）、山地（花岗岩、喀斯特）、河谷还是沿海？\n'
-    "* **气象与光影：** 云层特征（积云、层云）、光照强度、影子的长短。推测大概的季节或纬度范围。\n"
+    "🏆 第一可能位置：国家 - 省/州 - 城市或区域\n"
+    "可能性：高/中/低\n"
+    "依据：……\n"
+    "🥈 第二可能位置：……\n"
+    "可能性：高/中/低\n"
+    "依据：……\n"
+)
+
+DEFAULT_LOCATE_REFINE_PROMPT = (
+    "你是地理位置分析师。结合【视觉初判】与【联网检索摘要】给出最终定位结论。\n"
+    "只输出文本，不要 Markdown，不要生成图片。\n"
+    "规则：禁止编造检索中没有的信息；检索与画面冲突时以画面可见证据为准；"
+    "证据仍不足则降级到国家/省，勿瞎给经纬度；推理≤300字。\n"
+    "涉政键政直接回：见nm证呢滚\n"
     "\n"
-    "### 第二步：人文与基础设施分析\n"
-    "请挖掘画面中的人造线索：\n"
-    "* **交通特征：** 车辆靠左还是靠右行驶？路面铺装情况（柏油、红土）？车牌样式或车型（如Tuk-Tuk、皮卡、特定品牌）。\n"
-    "* **建筑风格：** 屋顶形状（坡顶、平顶）、建筑材料（木质、水泥、红砖）、是否有特定的宗教或文化装饰（如寺庙尖顶）。\n"
-    "* **文字与符号：** 路牌、广告牌上的文字语言、字体、交通标志的颜色和形状。\n"
-    "\n"
-    "### 第三步：关键线索提取\n"
-    '* 总结出 2-3 个最具辨识度的核心特征（例如："高大雪山+U型谷地"或"湄公河风格建筑+红土路"）。\n'
-    "\n"
-    "### 第四步：综合判断与输出（重点）\n"
-    "\n"
-    "**请按照以下逻辑顺序，撰写一段详细的推理总结（不包含在列表中）：**\n"
-    "\n"
-    '1.  **宏观定位：** 基于气候、植被和交通规则，首先将范围锁定在某个大区域（例如：东南亚内陆国家、中国西南地区）。\n'
-    "2.  **进一步缩小：** 结合大型地貌（河流、山脉）和建筑细节，将推断范围缩小至具体的国家或省份。请说明哪些细节支持了这一推断（如：桥梁栏杆颜色、特有的民居屋顶）。\n"
-    '3.  **精确搜索思路：** 明确列出你为了核实地点而构建的搜索关键词。格式为：**"进一步精确搜索目标：[关键词A] + [关键词B] + [关键词C]"**。\n'
-    "4.  **候选锁定：** 提出 1-2 个具体的候选城市或区域，并说明它们为什么符合上述特征。\n"
-    "\n"
-    "**在完成上述文字推理后，请给出最终的结构化排名：**\n"
-    "\n"
-    "**🏆 第一可能位置：[国家] - [省/州] - [城市/具体区域]**\n"
-    "* **经纬度（可选，当位置比较确定时，请附带经纬度，否则不加此条）：[精确的经纬度]（如东经xx°xx′，北纬xx°xx′）**\n"
-    "* **可能性概率：** [例如：85%]\n"
-    "* **🔍 判断依据：**\n"
-    "    * **依据1（地貌/环境）：** [详细解释]\n"
-    "    * **依据2（植被/气候）：** [详细解释]\n"
-    "    * **依据3（人文/基建）：** [详细解释]\n"
-    "\n"
-    "**🥈 第二可能位置：[备选地点]**\n"
-    "* **可能性概率：** [例如：15%]\n"
-    "* **🔍 判断依据：** [简述理由]\n"
-    "\n"
-    "---\n"
-    "请开始你的分析，输出文本，不要生成图片。"
+    "末尾必须包含：\n"
+    "🏆 第一可能位置：……\n"
+    "可能性：高/中/低\n"
+    "依据：……\n"
+    "🥈 第二可能位置：……\n"
+    "可能性：高/中/低\n"
+    "依据：……\n"
+    "不要输出 NEED_SEARCH 或 SEARCH_QUERIES。\n"
+)
+
+ANYSEARCH_ENDPOINT = "https://api.anysearch.com/mcp"
+ANYSEARCH_CONFIG_CANDIDATES = (
+    Path("/opt/astrbot/data/config/astrbot_plugin_anysearch_config.json"),
+    Path(__file__).resolve().parents[1] / "config" / "astrbot_plugin_anysearch_config.json",
 )
 
 QQ_AVATAR_URL = "https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
@@ -274,9 +281,16 @@ class KKTools(Star):
             config.get("locate_keywords"), ["在哪"]
         )
         self.locate_prompt: str = config.get("locate_prompt") or DEFAULT_LOCATE_PROMPT
+        self.locate_refine_prompt: str = (
+            config.get("locate_refine_prompt") or DEFAULT_LOCATE_REFINE_PROMPT
+        )
+        # 按需联网：复用 anysearch 插件配置；默认开启
+        self.locate_web_search: bool = bool(config.get("locate_web_search", True))
+        self.locate_search_max: int = max(1, min(int(config.get("locate_search_max", 3)), 3))
 
         # 冷却记录
         self._cooldowns: dict[str, float] = {}
+        self._anysearch_api_key: str | None = None
 
     # ── 主入口 ────────────────────────────────────
 
@@ -337,16 +351,15 @@ class KKTools(Star):
             f"[kktools:{feature}] text={text!r} images={len(images)}张"
         )
 
+        # 空载：仅关键词、无正文/引用/图片 → 静默不触发
         if not text and not images:
-            yield event.plain_result(TIP_NO_CONTENT[feature])
+            logger.info(f"[kktools:{feature}] 空载，跳过")
             return
 
         provider = self.context.get_using_provider()
         if provider is None:
             yield event.plain_result("当前未配置任何大模型提供商，请在 AstrBot 后台配置后再使用。")
             return
-
-        self._cooldowns[user_id] = now
 
         # 纯图场景兜底文案
         if not text:
@@ -360,20 +373,31 @@ class KKTools(Star):
         }
 
         try:
-            llm_resp = await provider.text_chat(
-                prompt=text,
-                image_urls=images if self.enable_vision else [],
-                system_prompt=prompt_map[feature],
-            )
-            content = (llm_resp.completion_text or "").strip()
+            if feature == "locate":
+                content = await self._locate_with_optional_search(
+                    provider, text, images
+                )
+            else:
+                llm_resp = await provider.text_chat(
+                    prompt=text,
+                    image_urls=images if self.enable_vision else [],
+                    system_prompt=prompt_map[feature],
+                )
+                content = (llm_resp.completion_text or "").strip()
         except Exception as e:
             logger.error(f"[kktools:{feature}] 调用大模型失败: {e}")
-            yield event.plain_result(f"调用失败，请稍后重试。")
+            yield event.plain_result("调用失败，请稍后重试。")
             return
 
         if not content:
             yield event.plain_result("模型未返回有效内容。")
             return
+
+        # 成功后再计冷却，失败不占用
+        self._cooldowns[user_id] = time.time()
+        if len(self._cooldowns) > 512:
+            cutoff = time.time() - max(self.cooldown, 1) * 2
+            self._cooldowns = {k: v for k, v in self._cooldowns.items() if v >= cutoff}
 
         content = self._strip_markdown(content)
 
@@ -393,33 +417,204 @@ class KKTools(Star):
         }
         yield event.plain_result(prefix_label[feature] + content)
 
+    async def _locate_with_optional_search(self, provider, text: str, images: list) -> str:
+        """视觉初判 → 按需 Anysearch → 二次收敛。"""
+        llm_resp = await provider.text_chat(
+            prompt=text,
+            image_urls=images if self.enable_vision else [],
+            system_prompt=self.locate_prompt,
+        )
+        draft = (llm_resp.completion_text or "").strip()
+        if not draft:
+            return ""
+
+        need, queries = self._parse_locate_search_block(draft)
+        logger.info(
+            f"[kktools:locate] need_search={need} queries={queries} web={self.locate_web_search}"
+        )
+
+        if not (self.locate_web_search and need and queries):
+            return self._strip_locate_search_block(draft)
+
+        search_blob = await self._anysearch_multi(queries[: self.locate_search_max])
+        if not search_blob:
+            logger.warning("[kktools:locate] 联网检索无结果，使用视觉初判")
+            return self._strip_locate_search_block(draft)
+
+        refine_prompt = (
+            f"【视觉初判】\n{self._strip_locate_search_block(draft)}\n\n"
+            f"【联网检索摘要】\n{search_blob}\n\n"
+            "请给出最终定位结论。"
+        )
+        try:
+            refine_resp = await provider.text_chat(
+                prompt=refine_prompt,
+                image_urls=images if self.enable_vision else [],
+                system_prompt=self.locate_refine_prompt,
+            )
+            refined = (refine_resp.completion_text or "").strip()
+            if refined:
+                return refined
+        except Exception as e:
+            logger.error(f"[kktools:locate] 二次收敛失败: {e}")
+
+        return self._strip_locate_search_block(draft)
+
+    @staticmethod
+    def _parse_locate_search_block(text: str) -> tuple[bool, list[str]]:
+        """解析 NEED_SEARCH / SEARCH_QUERIES。"""
+        need = False
+        m = re.search(r"NEED_SEARCH\s*[:：]\s*(yes|no|是|否|true|false)", text, re.I)
+        if m:
+            need = m.group(1).lower() in {"yes", "是", "true"}
+
+        queries: list[str] = []
+        block = re.search(
+            r"SEARCH_QUERIES\s*[:：]?\s*(.*?)(?=\n\s*🏆|\n\s*第一可能位置|\Z)",
+            text,
+            re.I | re.S,
+        )
+        if block:
+            for line in block.group(1).splitlines():
+                line = line.strip().lstrip("-*•、.）)0123456789 ").strip()
+                if not line or line.startswith("（") or "最多" in line[:8]:
+                    continue
+                if line.lower() in {"无", "none", "n/a", "-", "空"}:
+                    continue
+                queries.append(line[:120])
+                if len(queries) >= 3:
+                    break
+
+        if not need:
+            queries = []
+        return need, queries
+
+    @staticmethod
+    def _strip_locate_search_block(text: str) -> str:
+        """去掉内部检索控制块，保留推理与排名。"""
+        text = re.sub(
+            r"NEED_SEARCH\s*[:：]\s*\S+\s*",
+            "",
+            text,
+            flags=re.I,
+        )
+        text = re.sub(
+            r"SEARCH_QUERIES\s*[:：]?.*?(?=\n\s*🏆|\n\s*第一可能位置|\Z)",
+            "",
+            text,
+            flags=re.I | re.S,
+        )
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    def _load_anysearch_api_key(self) -> str:
+        if self._anysearch_api_key is not None:
+            return self._anysearch_api_key
+        key = ""
+        for path in ANYSEARCH_CONFIG_CANDIDATES:
+            try:
+                if path.is_file():
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    key = str(data.get("api_key") or "").strip()
+                    if key:
+                        break
+            except Exception as e:
+                logger.warning(f"[kktools:locate] 读取 anysearch 配置失败 {path}: {e}")
+        self._anysearch_api_key = key
+        return key
+
+    async def _anysearch_one(self, query: str, max_results: int = 5) -> str:
+        headers = {"Content-Type": "application/json"}
+        api_key = self._load_anysearch_api_key()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {"query": query, "max_results": max_results},
+            },
+        }
+        timeout = aiohttp.ClientTimeout(total=25)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.post(
+                ANYSEARCH_ENDPOINT, json=payload, headers=headers
+            ) as resp:
+                raw = await resp.text()
+                if resp.status >= 400:
+                    raise RuntimeError(f"AnySearch HTTP {resp.status}: {raw[:300]}")
+        data = json.loads(raw)
+        if "error" in data:
+            err = data["error"]
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"AnySearch API: {msg}")
+        result = data.get("result") or {}
+        content = result.get("content") or []
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return str(item.get("text") or "")
+        return json.dumps(result, ensure_ascii=False)[:2000]
+
+    async def _anysearch_multi(self, queries: list[str]) -> str:
+        chunks: list[str] = []
+        for q in queries:
+            q = (q or "").strip()
+            if not q:
+                continue
+            try:
+                body = await self._anysearch_one(q, max_results=4)
+                body = (body or "").strip()
+                if body:
+                    chunks.append(f"查询：{q}\n{body[:1800]}")
+                    logger.info(f"[kktools:locate] anysearch ok q={q!r} len={len(body)}")
+            except Exception as e:
+                logger.warning(f"[kktools:locate] anysearch fail q={q!r}: {e}")
+        return "\n\n---\n\n".join(chunks)[:6000]
+
     # ── 内容提取 ──────────────────────────────────
 
     def _extract_content(self, event, feature, matched_kw, is_prefix):
-        """提取文本与图片，优先取引用消息。"""
+        """提取文本与图片，优先取引用消息；指令后附言会并入。"""
         chain = event.get_messages()
-
-        # 优先：引用消息
-        for comp in chain:
-            if isinstance(comp, Reply) and comp.chain:
-                text, images = self._parse_chain(comp.chain)
-                if text or images:
-                    return text, images
-
-        # 否则：当前消息，去掉 @机器人
         self_id = str(event.get_self_id())
         cleaned = [
             c for c in chain
             if not (isinstance(c, At) and str(c.qq) == self_id)
+            and not isinstance(c, Reply)
         ]
-        text, images = self._parse_chain(cleaned)
+        cur_text, cur_images = self._parse_chain(cleaned)
 
-        # 剥离关键词
-        if text and matched_kw:
-            if is_prefix and text.startswith(matched_kw):
-                text = text[len(matched_kw):].strip()
-            elif not is_prefix and text.endswith(matched_kw):
-                text = text[: -len(matched_kw)].strip()
+        # 剥离当前消息上的触发词
+        if cur_text and matched_kw:
+            if is_prefix and cur_text.startswith(matched_kw):
+                cur_text = cur_text[len(matched_kw):].strip()
+                # 去掉关键词后紧跟的分隔符残留
+                cur_text = cur_text.lstrip("，。！？、；：,.!?;:…~～· \t")
+            elif not is_prefix and (
+                cur_text.endswith(matched_kw)
+                or any(cur_text.endswith(matched_kw + s) for s in ("？", "?"))
+            ):
+                if cur_text.endswith(matched_kw):
+                    cur_text = cur_text[: -len(matched_kw)].strip()
+                else:
+                    for s in ("？", "?"):
+                        if cur_text.endswith(matched_kw + s):
+                            cur_text = cur_text[: -(len(matched_kw) + len(s))].strip()
+                            break
+
+        text, images = "", []
+        for comp in chain:
+            if isinstance(comp, Reply) and comp.chain:
+                text, images = self._parse_chain(comp.chain)
+                break
+
+        # 引用 + 指令附言合并
+        if cur_text:
+            text = f"{text}\n{cur_text}".strip() if text else cur_text
+        if cur_images:
+            images = list(images) + [u for u in cur_images if u not in images]
 
         # 识图/定位：没图则取 @头像
         if feature in ("shitu", "locate") and not images:
@@ -444,23 +639,30 @@ class KKTools(Star):
 
     # ── 关键词匹配 ────────────────────────────────
 
-    @staticmethod
-    def _match_prefix(text, keywords):
-        """前缀匹配，返回命中的关键词或 None。"""
-        for kw in keywords:
-            if text.startswith(kw):
+    # 关键词后允许的分隔：空白 / 常见标点；粘连汉字如「省流量」不命中
+    _KW_SEP = frozenset(" \t\r\n，。！？、；：,.!?;:…~～·\"'“”‘’（）()【】[]")
+
+    @classmethod
+    def _match_prefix(cls, text, keywords):
+        """前缀精确边界匹配（最长优先）。「省流」✓「省流 今天」✓「省流量」✗。"""
+        for kw in sorted((k for k in keywords if k), key=len, reverse=True):
+            if not text.startswith(kw):
+                continue
+            rest = text[len(kw) :]
+            if rest == "" or rest[0] in cls._KW_SEP:
                 return kw
         return None
 
-    @staticmethod
-    def _match_suffix(text, keywords):
-        """后缀匹配（允许紧跟 ?/？），返回命中的完整后缀或 None。"""
-        for kw in keywords:
+    @classmethod
+    def _match_suffix(cls, text, keywords):
+        """后缀匹配（最长优先，允许紧跟 ?/？）。空载由 _run_feature 静默跳过。"""
+        for kw in sorted((k for k in keywords if k), key=len, reverse=True):
             if text.endswith(kw):
                 return kw
             for suffix in ("？", "?"):
-                if text.endswith(kw + suffix):
-                    return kw + suffix
+                token = kw + suffix
+                if text.endswith(token):
+                    return token
         return None
 
     # ── 辅助 ──────────────────────────────────────

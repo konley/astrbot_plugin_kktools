@@ -80,5 +80,17 @@
     "description": "地理定位系统提示词（留空使用内置默认）",
     "type": "text",
     "default": ""
+  },
+  "locate_web_search": {
+    "description": "地理定位按需联网（Anysearch）",
+    "type": "bool",
+    "default": true,
+    "hint": "视觉初判认为线索可核实时，调用本机 anysearch 配置做检索并二次收敛；识图不受影响"
+  },
+  "locate_search_max": {
+    "description": "定位联网最大查询条数",
+    "type": "int",
+    "default": 3,
+    "hint": "1-3，仅 NEED_SEARCH=yes 时生效"
   }
 }
