@@ -81,6 +81,11 @@
     "type": "text",
     "default": ""
   },
+  "locate_refine_prompt": {
+    "description": "地理定位二次收敛系统提示词（留空使用内置默认）",
+    "type": "text",
+    "default": ""
+  },
   "locate_web_search": {
     "description": "地理定位按需联网（Anysearch）",
     "type": "bool",
@@ -92,5 +97,17 @@
     "type": "int",
     "default": 3,
     "hint": "1-3，仅 NEED_SEARCH=yes 时生效"
+  },
+  "locate_show_details": {
+    "description": "发送地理定位完整分析",
+    "type": "bool",
+    "default": false,
+    "hint": "关闭时只发送专业定位摘要，不发送合并转发详情"
+  },
+  "locate_timeout": {
+    "description": "地理定位总超时时间（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "定位流程超过该时间后回退并提示，范围 15-120 秒"
   }
 }
