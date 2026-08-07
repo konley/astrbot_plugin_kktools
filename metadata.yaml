@@ -1,6 +1,6 @@
 name: astrbot_plugin_kktools
 desc: kk工具箱——省流总结、识图、阴阳怪气、地理定位，调用 AstrBot 已配置的大模型。
-version: 1.2.1
+version: 1.3.0
 author: konley
 display_name: kk工具箱
 repo: https://github.com/konley/astrbot_plugin_kktools
