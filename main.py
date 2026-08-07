@@ -9,6 +9,7 @@ import json
 import re
 import time
 import asyncio
+import base64
 from pathlib import Path
 
 import aiohttp
@@ -18,6 +19,12 @@ from astrbot.api.event import AstrMessageEvent, filter
 import astrbot.api.message_components as Comp
 from astrbot.api.message_components import At, Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
+
+IMAGE_DOWNLOAD_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 # ── 默认提示词（来自渔火的 ai-tools.js） ──────────────────────
 
@@ -352,6 +359,8 @@ class KKTools(Star):
             return
 
         text, images = self._extract_content(event, feature, matched_kw, is_prefix)
+        if images:
+            images = await self._images_to_data_urls(images)
         logger.info(
             f"[kktools:{feature}] text={text!r} images={len(images)}张"
         )
@@ -427,6 +436,75 @@ class KKTools(Star):
             "sarcastic": "",
         }
         yield event.plain_result(prefix_label[feature] + content)
+
+    @staticmethod
+    def _detect_image_mime(data: bytes) -> str:
+        """按魔数识别图片 MIME，兜底 JPEG。"""
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data[:4] == b"GIF8":
+            return "image/gif"
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data[:2] == b"BM":
+            return "image/bmp"
+        return "image/jpeg"
+
+    async def _images_to_data_urls(self, images: list[str]) -> list[str]:
+        """把远程图片 URL 下载为 data URL，避免把防盗链/临期 URL 透传给中转站。
+
+        仅转换 http(s) 引用；data URL 与本地引用原样保留。下载/校验失败的图片
+        直接丢弃（不阻塞请求，避免网关侧二次下载失败报 400）。GIF 动图取首帧
+        转 PNG，兼容不支持 GIF 的视觉网关。
+        """
+
+        async def one(url: str) -> str | None:
+            if not url.startswith(("http://", "https://")):
+                return url
+            try:
+                timeout = aiohttp.ClientTimeout(total=20)
+                headers = {
+                    "User-Agent": IMAGE_DOWNLOAD_UA,
+                    "Referer": url.split("?", 1)[0],
+                }
+                async with aiohttp.ClientSession(
+                    timeout=timeout, trust_env=True
+                ) as session:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status != 200:
+                            logger.warning(
+                                f"[kktools] 图片下载失败 HTTP {resp.status}: {url[:80]}"
+                            )
+                            return None
+                        data = await resp.read()
+                if not data or len(data) > MAX_IMAGE_BYTES:
+                    logger.warning(
+                        f"[kktools] 图片为空或过大，跳过: {len(data)}B url={url[:60]}"
+                    )
+                    return None
+                mime = self._detect_image_mime(data)
+                if mime == "image/gif":
+                    try:
+                        from PIL import Image as PILImage
+
+                        import io
+
+                        with PILImage.open(io.BytesIO(data)) as img:
+                            png = io.BytesIO()
+                            img.convert("RGBA").save(png, "PNG")
+                            data = png.getvalue()
+                        mime = "image/png"
+                    except Exception as e:
+                        logger.warning(f"[kktools] GIF 转 PNG 失败，跳过: {e}")
+                        return None
+                return f"data:{mime};base64,{base64.b64encode(data).decode()}"
+            except Exception as e:
+                logger.warning(f"[kktools] 图片下载失败: {e} url={url[:80]}")
+                return None
+
+        return [u for u in await asyncio.gather(*(one(u) for u in images)) if u]
 
     async def _locate_with_optional_search(self, provider, text: str, images: list) -> str:
         """视觉初判 → 按需 Anysearch → 二次收敛。"""
